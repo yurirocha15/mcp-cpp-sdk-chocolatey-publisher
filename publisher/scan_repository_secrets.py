@@ -31,7 +31,7 @@ def tracked_files(root: Path) -> list[Path]:
             continue
         relative = Path(os.fsdecode(encoded))
         if relative.is_absolute() or ".." in relative.parts:
-            raise ValueError(f"unsafe tracked path: {relative}")
+            raise ValueError(f"unsafe tracked path: {str(relative)!r}")
         paths.append(root / relative)
     return paths
 
