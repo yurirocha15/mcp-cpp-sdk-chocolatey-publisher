@@ -1,0 +1,59 @@
+{
+    "schema_version": 1,
+    "repository": {
+        "full_name": "yurirocha15/mcp-cpp-sdk-chocolatey-publisher",
+        "visibility": "public",
+        "default_branch": "main",
+        "issues": true,
+        "secret_scanning": true,
+        "push_protection": true,
+        "retention_days": 30
+    },
+    "actions": {
+        "default_workflow_permissions": "read",
+        "can_approve_pull_requests": false,
+        "github_hosted_runners_only": true,
+        "require_full_sha": true,
+        "allowed_actions": {
+            "actions/checkout": "9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
+            "actions/upload-artifact": "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+            "actions/download-artifact": "3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
+        }
+    },
+    "main_ruleset": {
+        "enforcement": "active",
+        "pull_request_required": true,
+        "required_approvals": 0,
+        "signed_commits": true,
+        "linear_history": true,
+        "conversation_resolution": true,
+        "deletion_blocked": true,
+        "force_push_blocked": true,
+        "bypass_actors": [],
+        "required_checks": [
+            "publisher-policy",
+            "secret-scan"
+        ]
+    },
+    "environment": {
+        "name": "chocolatey-publish",
+        "required_reviewer_count": 1,
+        "prevent_self_review": false,
+        "administrator_bypass": false,
+        "deployment_branch": "main",
+        "secrets": [
+            "CHOCOLATEY_API_KEY"
+        ],
+        "variables": []
+    },
+    "repository_variables": [
+        "SOURCE_REPOSITORY_ID",
+        "SOURCE_OWNER_ID",
+        "SOURCE_SIGNING_PRIMARY_FINGERPRINT",
+        "SOURCE_TAG_SIGNING_SUBKEY_FINGERPRINT",
+        "SOURCE_ARTIFACT_SIGNING_SUBKEY_FINGERPRINT"
+    ],
+    "issue_contract": {
+        "label": "chocolatey-submission"
+    }
+}
