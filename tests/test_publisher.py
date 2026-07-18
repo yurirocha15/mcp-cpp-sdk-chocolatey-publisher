@@ -3,11 +3,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import re
+import subprocess
 import tempfile
 import unittest
 from uuid import UUID
 import zipfile
 
+from publisher.scan_repository_secrets import SENSITIVE_PATTERN, find_sensitive_paths
 from publisher.validate_dispatch import validate
 from publisher.verify_release import _verify_nupkg
 
@@ -115,6 +117,29 @@ class WorkflowPolicyTests(unittest.TestCase):
         self.assertNotIn("secrets.", claim)
         self.assertNotIn("secrets.", record)
         self.assertIn("existing PREPARING claim requires manual reconciliation", claim)
+
+
+class SecretScanTests(unittest.TestCase):
+    def test_detector_recognizes_each_forbidden_shape(self) -> None:
+        samples = (
+            b"-----BEGIN PRIVATE" b" KEY-----",
+            b"ghp_" + b"a" * 20,
+            b"CHOCOLATEY_" b"API_KEY=secret",
+        )
+        for sample in samples:
+            with self.subTest(sample=sample[:16]):
+                self.assertIsNotNone(SENSITIVE_PATTERN.search(sample))
+
+    def test_tracked_repository_does_not_match_its_own_scanner(self) -> None:
+        self.assertEqual(find_sensitive_paths(ROOT), [])
+
+    def test_tracked_sensitive_file_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            subprocess.run(["git", "init", "--quiet", str(root)], check=True)
+            (root / "leak.txt").write_bytes(b"CHOCOLATEY_" b"API_KEY=secret")
+            subprocess.run(["git", "-C", str(root), "add", "leak.txt"], check=True)
+            self.assertEqual(find_sensitive_paths(root), [Path("leak.txt")])
 
 
 if __name__ == "__main__":
