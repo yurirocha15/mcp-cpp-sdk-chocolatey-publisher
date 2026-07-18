@@ -6,10 +6,15 @@ import re
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 from uuid import UUID
 import zipfile
 
-from publisher.scan_repository_secrets import SENSITIVE_PATTERN, find_sensitive_paths
+from publisher.scan_repository_secrets import (
+    SENSITIVE_PATTERN,
+    find_sensitive_paths,
+    tracked_files,
+)
 from publisher.validate_dispatch import validate
 from publisher.verify_release import _verify_nupkg
 
@@ -140,6 +145,18 @@ class SecretScanTests(unittest.TestCase):
             (root / "leak.txt").write_bytes(b"CHOCOLATEY_" b"API_KEY=secret")
             subprocess.run(["git", "-C", str(root), "add", "leak.txt"], check=True)
             self.assertEqual(find_sensitive_paths(root), [Path("leak.txt")])
+
+    def test_unsafe_path_error_escapes_control_characters(self) -> None:
+        result = subprocess.CompletedProcess([], 0, stdout=b"../bad\n\x1b[31m\0")
+        with (
+            patch("publisher.scan_repository_secrets.subprocess.run", return_value=result),
+            self.assertRaises(ValueError) as context,
+        ):
+            tracked_files(ROOT)
+        message = str(context.exception)
+        self.assertNotIn("\n", message)
+        self.assertNotIn("\x1b", message)
+        self.assertIn(r"\n\x1b", message)
 
 
 if __name__ == "__main__":
