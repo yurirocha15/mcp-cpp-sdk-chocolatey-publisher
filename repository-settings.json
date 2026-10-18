@@ -36,6 +36,13 @@
             "secret-scan"
         ]
     },
+    "control_tag_ruleset": {
+        "tag": "release-control-v1",
+        "enforcement": "active",
+        "update_blocked": true,
+        "deletion_blocked": true,
+        "bypass_actors": []
+    },
     "environment": {
         "name": "chocolatey-publish",
         "required_reviewer_count": 1,
