@@ -20,6 +20,18 @@ jobs:
           persist-credentials: false
       - run: python3 -m unittest discover -s tests -p 'test_*.py' -v
 
+  publisher-offline-windows:
+    name: publisher-offline-windows
+    runs-on: windows-2025
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Exercise the credential boundary with a mock Chocolatey CLI
+        shell: pwsh
+        run: ./tests/test_publish.ps1
+
   secret-scan:
     name: secret-scan
     runs-on: ubuntu-24.04

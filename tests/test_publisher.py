@@ -7,7 +7,7 @@ import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
-from uuid import UUID
+from uuid import NAMESPACE_URL, uuid5
 import zipfile
 
 from publisher.scan_repository_secrets import (
@@ -16,7 +16,7 @@ from publisher.scan_repository_secrets import (
     tracked_files,
 )
 from publisher.validate_dispatch import validate
-from publisher.verify_release import _verify_nupkg
+from publisher.verify_release import _install_script, _uninstall_script, _verify_nupkg
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -26,14 +26,23 @@ ACTION = re.compile(r"uses:\s*([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)@([0-9a-f]{40})(?
 
 class DispatchTests(unittest.TestCase):
     def request(self) -> dict[str, str]:
-        return {
+        request = {
             "source_tag": "v0.2.0",
             "source_commit_sha": "0" * 40,
+            "source_workflow_head_sha": "1" * 40,
+            "provider_control_sha": "2" * 40,
             "github_release_id": "1",
             "source_workflow_run_id": "2",
-            "release_manifest_sha256": "1" * 64,
-            "request_uuid": str(UUID(int=1)),
+            "release_manifest_sha256": "3" * 64,
         }
+        request["request_uuid"] = str(
+            uuid5(
+                NAMESPACE_URL,
+                f"yurirocha15/mcp-cpp-sdk:{request['source_tag']}:"
+                f"{request['release_manifest_sha256']}:chocolatey",
+            )
+        )
+        return request
 
     def test_exact_stable_dispatch(self) -> None:
         self.assertEqual(validate(self.request()), self.request())
@@ -43,6 +52,7 @@ class DispatchTests(unittest.TestCase):
             ("source_tag", "v0.2.0-rc.1"),
             ("source_commit_sha", "A" * 40),
             ("github_release_id", "01"),
+            ("request_uuid", "00000000-0000-0000-0000-000000000001"),
             ("extra", "value"),
         ):
             request = self.request()
@@ -65,24 +75,45 @@ class PackageTests(unittest.TestCase):
   </metadata>
 </package>
 """
-        install = (
-            f"Get-ChocolateyWebFile -Url64bit 'https://github.com/yurirocha15/mcp-cpp-sdk/releases/download/{tag}/{archive}' "
-            f"-Checksum64 '{digest}'\nMCP_CPP_SDK_ROOT\n"
+        install = _install_script(
+            version=version,
+            archive_url=(
+                f"https://github.com/yurirocha15/mcp-cpp-sdk/"
+                f"releases/download/{tag}/{archive}"
+            ),
+            archive_sha256=digest,
         )
         with tempfile.TemporaryDirectory() as directory:
             package = Path(directory) / f"mcp-cpp-sdk.{version}.nupkg"
-            with zipfile.ZipFile(package, "w") as output:
-                output.writestr("mcp-cpp-sdk.nuspec", nuspec)
-                output.writestr("tools/chocolateyinstall.ps1", install)
-                output.writestr("tools/chocolateyuninstall.ps1", "uninstall")
-                output.writestr("LICENSE.txt", "license")
-                output.writestr("VERIFICATION.txt", "verification")
+
+            def write_package(install_script: str) -> None:
+                with zipfile.ZipFile(package, "w") as output:
+                    output.writestr("mcp-cpp-sdk.nuspec", nuspec)
+                    output.writestr("tools/chocolateyinstall.ps1", install_script)
+                    output.writestr("tools/chocolateyuninstall.ps1", _uninstall_script())
+                    output.writestr("LICENSE.txt", "license")
+                    output.writestr(
+                        "VERIFICATION.txt",
+                        f"The archive SHA-256 is {digest} and is bound by the immutable "
+                        "GitHub Release manifest.\n",
+                    )
+
+            write_package(install)
             _verify_nupkg(
                 package,
                 version=version,
                 tag=tag,
                 records={archive: {"sha256": digest}},
             )
+            write_package(install + "Invoke-WebRequest 'https://example.invalid'\n")
+            with self.assertRaises(ValueError):
+                _verify_nupkg(
+                    package,
+                    version=version,
+                    tag=tag,
+                    records={archive: {"sha256": digest}},
+                )
+            write_package(install)
             with zipfile.ZipFile(package, "a") as output:
                 output.writestr("../escape", "bad")
             with self.assertRaises(ValueError):
@@ -112,16 +143,41 @@ class WorkflowPolicyTests(unittest.TestCase):
     def test_api_key_is_one_final_no_checkout_step(self) -> None:
         publish = self.workflow.split("\n  publish:\n", 1)[1].split("\n  record:\n", 1)[0]
         self.assertNotIn("actions/checkout", publish)
-        self.assertNotIn("publisher/", publish)
         self.assertEqual(publish.count("secrets.CHOCOLATEY_API_KEY"), 1)
-        self.assertTrue(publish.rstrip().endswith('throw "Chocolatey push failed with exit code $LASTEXITCODE"\n          }'))
+        self.assertIn("environment: chocolatey-publish", publish)
+        self.assertIn("./submission/publish.ps1", publish)
 
     def test_claim_and_record_are_credential_free(self) -> None:
         claim = self.workflow.split("\n  claim:\n", 1)[1].split("\n  publish:\n", 1)[0]
         record = self.workflow.split("\n  record:\n", 1)[1]
         self.assertNotIn("secrets.", claim)
         self.assertNotIn("secrets.", record)
-        self.assertIn("existing PREPARING claim requires manual reconciliation", claim)
+
+    def test_workflow_has_exact_source_dispatch_and_no_embedded_python(self) -> None:
+        dispatch = self.workflow.split("  workflow_dispatch:\n", 1)[1].split(
+            "\npermissions:", 1
+        )[0]
+        declared = {
+            match.group(1)
+            for match in re.finditer(
+                r"^      ([a-z][a-z0-9_]+):$", dispatch, re.MULTILINE
+            )
+        }
+        self.assertEqual(
+            declared,
+            {
+                "source_tag",
+                "source_commit_sha",
+                "source_workflow_head_sha",
+                "provider_control_sha",
+                "github_release_id",
+                "source_workflow_run_id",
+                "release_manifest_sha256",
+                "request_uuid",
+            },
+        )
+        self.assertNotIn("<<'PY'", self.workflow)
+        self.assertNotIn("refs/heads/main", self.workflow)
 
 
 class SecretScanTests(unittest.TestCase):

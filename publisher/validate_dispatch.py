@@ -8,17 +8,21 @@ import os
 from pathlib import Path
 import re
 import sys
-from uuid import UUID
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 
 FIELDS = (
     "source_tag",
     "source_commit_sha",
+    "source_workflow_head_sha",
+    "provider_control_sha",
     "github_release_id",
     "source_workflow_run_id",
     "release_manifest_sha256",
     "request_uuid",
 )
+SOURCE_REPOSITORY = "yurirocha15/mcp-cpp-sdk"
+CHANNEL = "chocolatey"
 TAG = re.compile(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
 SHA = re.compile(r"[0-9a-f]{40}")
 DIGEST = re.compile(r"[0-9a-f]{64}")
@@ -38,8 +42,13 @@ def validate(value: object) -> dict[str, str]:
         result[field] = item
     if TAG.fullmatch(result["source_tag"]) is None:
         raise ValueError("source_tag is not a canonical stable tag")
-    if SHA.fullmatch(result["source_commit_sha"]) is None:
-        raise ValueError("source_commit_sha is not canonical")
+    for field in (
+        "source_commit_sha",
+        "source_workflow_head_sha",
+        "provider_control_sha",
+    ):
+        if SHA.fullmatch(result[field]) is None:
+            raise ValueError(f"{field} is not canonical")
     if DIGEST.fullmatch(result["release_manifest_sha256"]) is None:
         raise ValueError("release_manifest_sha256 is not canonical")
     for field in ("github_release_id", "source_workflow_run_id"):
@@ -51,6 +60,13 @@ def validate(value: object) -> dict[str, str]:
         raise ValueError("request_uuid is invalid") from error
     if str(request_id) != result["request_uuid"]:
         raise ValueError("request_uuid is not canonical lowercase")
+    expected_request_id = uuid5(
+        NAMESPACE_URL,
+        f"{SOURCE_REPOSITORY}:{result['source_tag']}:"
+        f"{result['release_manifest_sha256']}:{CHANNEL}",
+    )
+    if request_id != expected_request_id:
+        raise ValueError("request_uuid does not match the deterministic release identity")
     return result
 
 

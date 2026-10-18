@@ -1,0 +1,34 @@
+$ErrorActionPreference = 'Stop'
+$version = '@VERSION@'
+$toolsDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
+$installDir = Join-Path (Get-ToolsLocation) 'mcp-cpp-sdk'
+$stagingDir = "$installDir.installing"
+
+$archive = Join-Path $toolsDir "mcp-cpp-sdk-$version-windows-x64-v143-md.zip"
+if (Test-Path -LiteralPath $stagingDir) {
+  Remove-Item -LiteralPath $stagingDir -Recurse -Force
+}
+try {
+  Get-ChocolateyWebFile -PackageName 'mcp-cpp-sdk' -FileFullPath $archive `
+    -Url64bit '@ARCHIVE_URL@' -Checksum64 '@ARCHIVE_SHA256@' -ChecksumType64 'sha256'
+  Get-ChocolateyUnzip -FileFullPath $archive -Destination $stagingDir -PackageName 'mcp-cpp-sdk'
+  if (-not (Test-Path -LiteralPath $stagingDir -PathType Container)) {
+    throw 'Chocolatey SDK staging directory was not created'
+  }
+  if (Test-Path -LiteralPath $installDir) {
+    Remove-Item -LiteralPath $installDir -Recurse -Force
+  }
+  Move-Item -LiteralPath $stagingDir -Destination $installDir
+}
+finally {
+  if (Test-Path -LiteralPath $archive) {
+    Remove-Item -LiteralPath $archive -Force
+  }
+  if (Test-Path -LiteralPath $stagingDir) {
+    Remove-Item -LiteralPath $stagingDir -Recurse -Force
+  }
+}
+Install-ChocolateyEnvironmentVariable `
+  -VariableName 'MCP_CPP_SDK_ROOT' `
+  -VariableValue $installDir `
+  -VariableType Machine

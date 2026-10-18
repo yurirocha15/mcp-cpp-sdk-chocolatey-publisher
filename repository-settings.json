@@ -32,6 +32,7 @@
         "bypass_actors": [],
         "required_checks": [
             "publisher-policy",
+            "publisher-offline-windows",
             "secret-scan"
         ]
     },
@@ -40,13 +41,14 @@
         "required_reviewer_count": 1,
         "prevent_self_review": false,
         "administrator_bypass": false,
-        "deployment_branch": "main",
+        "deployment_tag": "release-control-v1",
         "secrets": [
             "CHOCOLATEY_API_KEY"
         ],
         "variables": []
     },
     "repository_variables": [
+        "PUBLISHER_REPOSITORY_ID",
         "SOURCE_REPOSITORY_ID",
         "SOURCE_OWNER_ID",
         "SOURCE_SIGNING_PRIMARY_FINGERPRINT",
