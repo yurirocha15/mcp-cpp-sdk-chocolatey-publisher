@@ -1,0 +1,8 @@
+$ErrorActionPreference = 'Stop'
+$installDir = Join-Path (Get-ToolsLocation) 'mcp-cpp-sdk'
+if (Test-Path -LiteralPath $installDir) {
+  Remove-Item -LiteralPath $installDir -Recurse -Force
+}
+Uninstall-ChocolateyEnvironmentVariable `
+  -VariableName 'MCP_CPP_SDK_ROOT' `
+  -VariableType Machine

@@ -9,6 +9,12 @@ on:
       source_commit_sha:
         required: true
         type: string
+      source_workflow_head_sha:
+        required: true
+        type: string
+      provider_control_sha:
+        required: true
+        type: string
       github_release_id:
         required: true
         type: string
@@ -25,6 +31,10 @@ on:
 permissions:
   contents: read
 
+env:
+  DISPATCH_JSON: >-
+    {"source_tag":${{ toJSON(inputs.source_tag) }},"source_commit_sha":${{ toJSON(inputs.source_commit_sha) }},"source_workflow_head_sha":${{ toJSON(inputs.source_workflow_head_sha) }},"provider_control_sha":${{ toJSON(inputs.provider_control_sha) }},"github_release_id":${{ toJSON(inputs.github_release_id) }},"source_workflow_run_id":${{ toJSON(inputs.source_workflow_run_id) }},"release_manifest_sha256":${{ toJSON(inputs.release_manifest_sha256) }},"request_uuid":${{ toJSON(inputs.request_uuid) }}}
+
 concurrency:
   group: chocolatey-publishing
   cancel-in-progress: false
@@ -32,9 +42,6 @@ concurrency:
 jobs:
   verify:
     name: verify signed immutable Chocolatey input
-    if: >-
-      github.ref == 'refs/heads/main' &&
-      github.workflow_ref == 'yurirocha15/mcp-cpp-sdk-chocolatey-publisher/.github/workflows/publish.yml@refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -45,66 +52,25 @@ jobs:
       package_name: ${{ steps.package.outputs.package_name }}
       package_sha256: ${{ steps.package.outputs.package_sha256 }}
     steps:
-      - name: Checkout protected publisher controls only
+      - name: Checkout immutable publisher controls
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
       - name: Validate the exact dispatch schema
         id: input
-        env:
-          DISPATCH_JSON: >-
-            {"source_tag":${{ toJSON(inputs.source_tag) }},"source_commit_sha":${{ toJSON(inputs.source_commit_sha) }},"github_release_id":${{ toJSON(inputs.github_release_id) }},"source_workflow_run_id":${{ toJSON(inputs.source_workflow_run_id) }},"release_manifest_sha256":${{ toJSON(inputs.release_manifest_sha256) }},"request_uuid":${{ toJSON(inputs.request_uuid) }}}
-        run: python3 -I -S publisher/validate_dispatch.py
-      - name: Verify source repository, immutable release, and completed source run
+        run: python3 -I -S run_publisher_tool.py validate_dispatch
+      - name: Verify execution context, source release, source run, and signed tag
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.input.outputs.source_tag }}
-          COMMIT: ${{ steps.input.outputs.source_commit_sha }}
-          RELEASE_ID: ${{ inputs.github_release_id }}
-          SOURCE_RUN_ID: ${{ inputs.source_workflow_run_id }}
+          PUBLISHER_REPOSITORY_ID: ${{ vars.PUBLISHER_REPOSITORY_ID }}
           SOURCE_REPOSITORY_ID: ${{ vars.SOURCE_REPOSITORY_ID }}
           SOURCE_OWNER_ID: ${{ vars.SOURCE_OWNER_ID }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          source_repo="$(gh api /repos/yurirocha15/mcp-cpp-sdk)"
-          test "$(jq -r '.id|tostring' <<<"$source_repo")" = "$SOURCE_REPOSITORY_ID"
-          test "$(jq -r '.owner.id|tostring' <<<"$source_repo")" = "$SOURCE_OWNER_ID"
-          release="$(gh api -H 'X-GitHub-Api-Version: 2026-03-10' \
-            "/repos/yurirocha15/mcp-cpp-sdk/releases/tags/$TAG")"
-          test "$(jq -r '.id|tostring' <<<"$release")" = "$RELEASE_ID"
-          test "$(jq -r '.draft,.prerelease,.immutable' <<<"$release")" = $'false\nfalse\ntrue'
-          source_run=''
-          for _ in $(seq 1 30); do
-            source_run="$(gh api "/repos/yurirocha15/mcp-cpp-sdk/actions/runs/$SOURCE_RUN_ID")"
-            status="$(jq -r '.status' <<<"$source_run")"
-            if [[ "$status" == completed ]]; then
-              break
-            fi
-            [[ "$status" == in_progress || "$status" == queued ]]
-            sleep 10
-          done
-          test "$(jq -r '.event,.conclusion,.head_sha,.head_branch,.path,.repository.id|tostring' <<<"$source_run")" = $'workflow_dispatch\nsuccess\n'"$COMMIT"$'\nmain\n.github/workflows/release.yml\n'"$SOURCE_REPOSITORY_ID"
-      - name: Verify the signed annotated source tag
-        env:
-          TAG: ${{ steps.input.outputs.source_tag }}
-          COMMIT: ${{ steps.input.outputs.source_commit_sha }}
-          PRIMARY_FINGERPRINT: ${{ vars.SOURCE_SIGNING_PRIMARY_FINGERPRINT }}
-          TAG_FINGERPRINT: ${{ vars.SOURCE_TAG_SIGNING_SUBKEY_FINGERPRINT }}
-        run: |
-          gpg --batch --import keys/release-signing-key.asc
-          git init --bare source.git
-          git -C source.git fetch --no-tags --depth=1 https://github.com/yurirocha15/mcp-cpp-sdk.git \
-            "refs/tags/${TAG}:refs/tags/${TAG}"
-          git -C source.git fetch --no-tags https://github.com/yurirocha15/mcp-cpp-sdk.git \
-            "refs/heads/main:refs/heads/main"
-          test "$(git -C source.git cat-file -t "${TAG}")" = tag
-          git -C source.git verify-tag --raw "${TAG}" 2> tag.status
-          test "$(git -C source.git rev-list -n1 "${TAG}")" = "${COMMIT}"
-          git -C source.git merge-base --is-ancestor "${COMMIT}" refs/heads/main
-          python3 -I -S publisher/verify_git_status.py tag.status \
-            "${TAG_FINGERPRINT}" "${PRIMARY_FINGERPRINT}"
+          SOURCE_SIGNING_PRIMARY_FINGERPRINT: ${{ vars.SOURCE_SIGNING_PRIMARY_FINGERPRINT }}
+          SOURCE_TAG_SIGNING_SUBKEY_FINGERPRINT: ${{ vars.SOURCE_TAG_SIGNING_SUBKEY_FINGERPRINT }}
+        run: >-
+          python3 -I -S run_publisher_tool.py verify_source
+          --public-key keys/release-signing-key.asc
       - name: Download and independently verify the release package
         id: package
         env:
@@ -114,49 +80,30 @@ jobs:
           MANIFEST_SHA256: ${{ inputs.release_manifest_sha256 }}
           PRIMARY_FINGERPRINT: ${{ vars.SOURCE_SIGNING_PRIMARY_FINGERPRINT }}
           ARTIFACT_FINGERPRINT: ${{ vars.SOURCE_ARTIFACT_SIGNING_SUBKEY_FINGERPRINT }}
+          PUBLISHER_REPOSITORY_ID: ${{ vars.PUBLISHER_REPOSITORY_ID }}
+          PROVIDER_CONTROL_SHA: ${{ inputs.provider_control_sha }}
         run: |
           mkdir release-assets
           gh release download "${TAG}" --repo yurirocha15/mcp-cpp-sdk --dir release-assets
-          python3 -I -S publisher/verify_release.py \
+          python3 -I -S run_publisher_tool.py verify_release \
             --directory release-assets --tag "${TAG}" --commit "${COMMIT}" \
             --manifest-sha256 "${MANIFEST_SHA256}" \
             --primary-fingerprint "${PRIMARY_FINGERPRINT}" \
             --artifact-fingerprint "${ARTIFACT_FINGERPRINT}" \
-            --public-key keys/release-signing-key.asc
+            --public-key keys/release-signing-key.asc \
+            --publisher-repository-id "${PUBLISHER_REPOSITORY_ID}" \
+            --provider-control-tag "${GITHUB_REF_NAME}" \
+            --provider-control-sha "${PROVIDER_CONTROL_SHA}"
       - name: Create a digest-bound same-run handoff
         env:
           PACKAGE_NAME: ${{ steps.package.outputs.package_name }}
           PACKAGE_SHA256: ${{ steps.package.outputs.package_sha256 }}
-          TAG: ${{ steps.input.outputs.source_tag }}
-          COMMIT: ${{ steps.input.outputs.source_commit_sha }}
-          MANIFEST_SHA256: ${{ inputs.release_manifest_sha256 }}
-          REQUEST_UUID: ${{ inputs.request_uuid }}
-          RUN_ID: ${{ github.run_id }}
-          RUN_ATTEMPT: ${{ github.run_attempt }}
-        run: |
-          mkdir submission
-          cp "release-assets/${PACKAGE_NAME}" submission/
-          python3 -I -S <<'PY'
-          import json
-          import os
-          from pathlib import Path
-
-          identity = {
-              "schema_version": 1,
-              "source_tag": os.environ["TAG"],
-              "source_commit_sha": os.environ["COMMIT"],
-              "release_manifest_sha256": os.environ["MANIFEST_SHA256"],
-              "package_name": os.environ["PACKAGE_NAME"],
-              "package_sha256": os.environ["PACKAGE_SHA256"],
-              "request_uuid": os.environ["REQUEST_UUID"],
-              "run_id": os.environ["RUN_ID"],
-              "run_attempt": os.environ["RUN_ATTEMPT"],
-          }
-          Path("submission/identity.json").write_text(
-              json.dumps(identity, sort_keys=True, separators=(",", ":")) + "\n",
-              encoding="utf-8",
-          )
-          PY
+        run: >-
+          python3 -I -S run_publisher_tool.py submission prepare
+          --directory submission --package "release-assets/${PACKAGE_NAME}"
+          --package-sha256 "${PACKAGE_SHA256}"
+          --publisher-script publisher/publish.ps1
+          --run-id "${GITHUB_RUN_ID}" --run-attempt "${GITHUB_RUN_ATTEMPT}"
       - name: Upload the verified same-run package handoff
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -173,6 +120,8 @@ jobs:
             echo '## Approved Chocolatey submission'
             echo
             echo "- Source: ${{ steps.input.outputs.source_tag }} at ${{ steps.input.outputs.source_commit_sha }}"
+            echo "- Source workflow: ${{ inputs.source_workflow_run_id }} at ${{ inputs.source_workflow_head_sha }}"
+            echo "- Provider control: ${GITHUB_REF_NAME} at ${{ inputs.provider_control_sha }}"
             echo "- Immutable release ID: ${{ inputs.github_release_id }}"
             echo "- Release manifest SHA-256: ${{ inputs.release_manifest_sha256 }}"
             echo "- Package: ${PACKAGE_NAME}"
@@ -192,77 +141,20 @@ jobs:
       issue_number: ${{ steps.claim.outputs.issue_number }}
       already_submitted: ${{ steps.claim.outputs.already_submitted }}
     steps:
+      - name: Checkout immutable claim state tooling
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
       - name: Create, skip, or fail closed on the submission claim
         id: claim
         env:
           GH_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
-          VERSION: ${{ needs.verify.outputs.version }}
           PACKAGE_NAME: ${{ needs.verify.outputs.package_name }}
           PACKAGE_SHA256: ${{ needs.verify.outputs.package_sha256 }}
-          TAG: ${{ inputs.source_tag }}
-          COMMIT: ${{ inputs.source_commit_sha }}
-          MANIFEST_SHA256: ${{ inputs.release_manifest_sha256 }}
-          REQUEST_UUID: ${{ inputs.request_uuid }}
-        run: |
-          gh api --paginate --slurp \
-            "repos/${REPOSITORY}/issues?state=all&labels=chocolatey-submission&per_page=100" > issue-pages.json
-          python3 -I -S <<'PY'
-          import json
-          import os
-          from pathlib import Path
-
-          marker = f"<!-- chocolatey-submission:v1 package=mcp-cpp-sdk version={os.environ['VERSION']} -->"
-          expected = {
-              "source_tag": os.environ["TAG"],
-              "source_commit_sha": os.environ["COMMIT"],
-              "release_manifest_sha256": os.environ["MANIFEST_SHA256"],
-              "package_name": os.environ["PACKAGE_NAME"],
-              "package_sha256": os.environ["PACKAGE_SHA256"],
-          }
-          pages = json.loads(Path("issue-pages.json").read_text(encoding="utf-8"))
-          issues = [issue for page in pages for issue in page if "pull_request" not in issue]
-          matches = [issue for issue in issues if marker in (issue.get("body") or "")]
-          if len(matches) > 1:
-              raise SystemExit("submission claim identity is ambiguous")
-          output = Path(os.environ["GITHUB_OUTPUT"])
-          if matches:
-              issue = matches[0]
-              body = issue.get("body") or ""
-              prefix = "<!-- chocolatey-submission-json\n"
-              suffix = "\nchocolatey-submission-json -->"
-              if body.count(prefix) != 1 or body.count(suffix) != 1:
-                  raise SystemExit("existing submission claim is malformed")
-              encoded = body.split(prefix, 1)[1].split(suffix, 1)[0]
-              value = json.loads(encoded)
-              if value.get("identity") != expected:
-                  raise SystemExit("existing submission claim conflicts with this release")
-              if value.get("state") == "SUBMITTED":
-                  output.write_text(
-                      f"issue_number={issue['number']}\nalready_submitted=true\n",
-                      encoding="utf-8",
-                  )
-                  raise SystemExit(0)
-              raise SystemExit("existing PREPARING claim requires manual reconciliation")
-
-          claim = {"schema_version": 1, "state": "PREPARING", "identity": expected}
-          body = (
-              marker + "\n\nChocolatey submission state: **PREPARING**\n\n"
-              + "<!-- chocolatey-submission-json\n"
-              + json.dumps(claim, sort_keys=True, separators=(",", ":"))
-              + "\nchocolatey-submission-json -->\n"
-          )
-          Path("claim-body.md").write_text(body, encoding="utf-8")
-          PY
-          if [[ -f claim-body.md ]]; then
-            issue="$(gh api --method POST "repos/${REPOSITORY}/issues" \
-              -f title="[chocolatey] mcp-cpp-sdk ${VERSION}" \
-              -F body=@claim-body.md -f 'labels[]=chocolatey-submission')"
-            {
-              echo "issue_number=$(jq -r '.number' <<<"${issue}")"
-              echo 'already_submitted=false'
-            } >> "${GITHUB_OUTPUT}"
-          fi
+        run: >-
+          python3 -I -S run_publisher_tool.py submission claim
+          --package-name "${PACKAGE_NAME}" --package-sha256 "${PACKAGE_SHA256}"
 
   publish:
     name: push the exact package with the isolated API key
@@ -284,26 +176,14 @@ jobs:
           CHOCOLATEY_API_KEY: ${{ secrets.CHOCOLATEY_API_KEY }}
           EXPECTED_PACKAGE: ${{ needs.verify.outputs.package_name }}
           EXPECTED_SHA256: ${{ needs.verify.outputs.package_sha256 }}
-          RUN_ID: ${{ github.run_id }}
-          RUN_ATTEMPT: ${{ github.run_attempt }}
         shell: pwsh
-        run: |
-          $identity = Get-Content -Raw submission/identity.json | ConvertFrom-Json
-          if ($identity.run_id -ne $env:RUN_ID -or $identity.run_attempt -ne $env:RUN_ATTEMPT) {
-            throw 'submission handoff belongs to a different workflow run'
-          }
-          if ($identity.package_name -ne $env:EXPECTED_PACKAGE -or $identity.package_sha256 -ne $env:EXPECTED_SHA256) {
-            throw 'submission handoff identity mismatch'
-          }
-          $package = Join-Path submission $env:EXPECTED_PACKAGE
-          $actual = (Get-FileHash -Algorithm SHA256 $package).Hash.ToLowerInvariant()
-          if ($actual -ne $env:EXPECTED_SHA256) {
-            throw 'submission package SHA-256 mismatch'
-          }
-          choco push $package --source 'https://push.chocolatey.org/' --api-key $env:CHOCOLATEY_API_KEY
-          if ($LASTEXITCODE -ne 0) {
-            throw "Chocolatey push failed with exit code $LASTEXITCODE"
-          }
+        run: >-
+          & ./submission/publish.ps1
+          -SubmissionDirectory submission
+          -ExpectedPackage $env:EXPECTED_PACKAGE
+          -ExpectedSha256 $env:EXPECTED_SHA256
+          -RunId $env:GITHUB_RUN_ID
+          -RunAttempt $env:GITHUB_RUN_ATTEMPT
 
   record:
     name: record an exact completed submission without credentials
@@ -317,42 +197,23 @@ jobs:
       contents: read
       issues: write
     steps:
+      - name: Checkout immutable claim state tooling
+        if: ${{ needs.claim.outputs.already_submitted != 'true' }}
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
       - name: Mark a newly pushed package as submitted
         if: ${{ needs.claim.outputs.already_submitted != 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
           ISSUE_NUMBER: ${{ needs.claim.outputs.issue_number }}
-          VERSION: ${{ needs.verify.outputs.version }}
           PACKAGE_NAME: ${{ needs.verify.outputs.package_name }}
           PACKAGE_SHA256: ${{ needs.verify.outputs.package_sha256 }}
-          TAG: ${{ inputs.source_tag }}
-          COMMIT: ${{ inputs.source_commit_sha }}
-          MANIFEST_SHA256: ${{ inputs.release_manifest_sha256 }}
-        run: |
-          python3 -I -S <<'PY'
-          import json
-          import os
-          from pathlib import Path
-
-          marker = f"<!-- chocolatey-submission:v1 package=mcp-cpp-sdk version={os.environ['VERSION']} -->"
-          identity = {
-              "source_tag": os.environ["TAG"],
-              "source_commit_sha": os.environ["COMMIT"],
-              "release_manifest_sha256": os.environ["MANIFEST_SHA256"],
-              "package_name": os.environ["PACKAGE_NAME"],
-              "package_sha256": os.environ["PACKAGE_SHA256"],
-          }
-          claim = {"schema_version": 1, "state": "SUBMITTED", "identity": identity}
-          body = (
-              marker + "\n\nChocolatey submission state: **SUBMITTED_PENDING_MODERATION**\n\n"
-              + "<!-- chocolatey-submission-json\n"
-              + json.dumps(claim, sort_keys=True, separators=(",", ":"))
-              + "\nchocolatey-submission-json -->\n"
-          )
-          Path("submitted-body.md").write_text(body, encoding="utf-8")
-          PY
-          gh issue edit "${ISSUE_NUMBER}" --repo "${REPOSITORY}" --body-file submitted-body.md
+        run: >-
+          python3 -I -S run_publisher_tool.py submission record
+          --issue-number "${ISSUE_NUMBER}" --package-name "${PACKAGE_NAME}"
+          --package-sha256 "${PACKAGE_SHA256}"
       - name: Report an identical prior submission
         if: ${{ needs.claim.outputs.already_submitted == 'true' }}
         run: echo 'The exact package was already recorded as submitted.'
