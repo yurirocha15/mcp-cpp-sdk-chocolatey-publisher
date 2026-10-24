@@ -7,8 +7,10 @@ publication contract, and Chocolatey package before claiming an idempotency
 record. The community feed API key is exposed only to the final protected,
 no-checkout push job.
 
-A `PREPARING` claim left by an interrupted push is deliberately ambiguous and
-blocks automatic retry. A completed identical claim skips publication. Public
+A `PREPARING` claim left by an interrupted run is resumed only by a retry that
+carries the identical request identity (including `request_uuid`); a claim for
+any different request or package fails closed and needs manual reconciliation.
+A completed identical claim skips publication. Public
 configuration policy is declared without operator IDs, fingerprints,
 credentials, or provisioning evidence.
 

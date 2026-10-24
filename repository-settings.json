@@ -37,7 +37,7 @@
         ]
     },
     "control_tag_ruleset": {
-        "tag": "release-control-v1",
+        "tag": "release-control-v2",
         "enforcement": "active",
         "update_blocked": true,
         "deletion_blocked": true,
@@ -48,7 +48,7 @@
         "required_reviewer_count": 1,
         "prevent_self_review": false,
         "administrator_bypass": false,
-        "deployment_tag": "release-control-v1",
+        "deployment_tag": "release-control-v2",
         "secrets": [
             "CHOCOLATEY_API_KEY"
         ],

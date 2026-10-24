@@ -24,6 +24,10 @@ DIGEST = re.compile(r"[0-9a-f]{64}")
 CONTROL_TAG = re.compile(r"release-control-v[1-9][0-9]*")
 PUBLISHER_REPOSITORY = "yurirocha15/mcp-cpp-sdk-chocolatey-publisher"
 PUBLICATION_CONTRACT = "release-publication-contract.json"
+NUSPEC_NAMESPACES = (
+    "http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd",
+    "http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd",
+)
 TEMPLATES = Path(__file__).with_name("templates")
 
 
@@ -229,7 +233,12 @@ def _verify_nupkg(
         if len(nuspecs) != 1:
             raise ValueError("Chocolatey package must contain one root nuspec")
         root = ET.fromstring(package.read(nuspecs[0]))
-        namespace = {"n": "http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd"}
+        # ``choco pack`` rewrites the nuspec to the 2013/05 schema namespace
+        # (with a UTF-8 BOM, which the XML parser consumes); the unpacked
+        # template uses 2015/06. Accept exactly these two, nothing else.
+        if root.tag not in {f"{{{namespace}}}package" for namespace in NUSPEC_NAMESPACES}:
+            raise ValueError("Chocolatey nuspec namespace is not recognized")
+        namespace = {"n": root.tag[1:].split("}", 1)[0]}
         metadata = root.find("n:metadata", namespace)
         if metadata is None:
             raise ValueError("Chocolatey nuspec metadata is missing")
@@ -242,9 +251,9 @@ def _verify_nupkg(
 
         if text("id") != "mcp-cpp-sdk" or text("version") != version:
             raise ValueError("Chocolatey nuspec identity mismatch")
-        license_element = metadata.find("n:license", namespace)
-        if license_element is None or license_element.get("type") != "expression" or license_element.text != "Apache-2.0":
-            raise ValueError("Chocolatey nuspec license is not Apache-2.0")
+        # ``choco pack`` rejects <license>, so the package carries licenseUrl.
+        if text("licenseUrl") != f"https://github.com/yurirocha15/mcp-cpp-sdk/blob/{tag}/LICENSE":
+            raise ValueError("Chocolatey nuspec license URL is not the tagged Apache-2.0 LICENSE")
         install_script = package.read("tools/chocolateyinstall.ps1").decode("utf-8")
         uninstall_script = package.read("tools/chocolateyuninstall.ps1").decode("utf-8")
         verification = package.read("VERIFICATION.txt").decode("utf-8")

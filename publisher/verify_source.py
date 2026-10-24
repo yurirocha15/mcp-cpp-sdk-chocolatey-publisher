@@ -30,6 +30,15 @@ PUBLISHER_WORKFLOW = ".github/workflows/publish.yml"
 SOURCE_WORKFLOW = ".github/workflows/release.yml"
 CONTROL_REF = re.compile(r"refs/tags/(release-control-v[1-9][0-9]*)")
 POSITIVE_DECIMAL = re.compile(r"[1-9][0-9]*")
+# The source run contains approval-gated jobs, so wait up to two hours.
+SOURCE_RUN_INTERVAL_SECONDS = 30
+SOURCE_RUN_ATTEMPTS = 240
+# Statuses GitHub reports while a run is queued or parked at an approval gate.
+SOURCE_RUN_PENDING_STATUSES = frozenset(
+    {"queued", "in_progress", "waiting", "requested", "pending"}
+)
+# Consecutive transient API failures tolerated while polling; the next raises.
+SOURCE_RUN_MAX_CONSECUTIVE_FAILURES = 4
 
 
 class SourceVerificationError(ValueError):
@@ -86,7 +95,7 @@ def verify_source_state(
     source_repository_id: str,
     source_owner_id: str,
     sleep: Callable[[float], None] = time.sleep,
-    attempts: int = 30,
+    attempts: int = SOURCE_RUN_ATTEMPTS,
 ) -> None:
     """Verify repository, immutable release, and completed dispatching workflow."""
 
@@ -122,18 +131,28 @@ def verify_source_state(
 
     run_id = dispatch["source_workflow_run_id"]
     run: Mapping[str, object] | None = None
+    failures = 0
     for attempt in range(attempts):
-        run = _mapping(
-            api("GET", f"repos/{SOURCE_REPOSITORY}/actions/runs/{run_id}"),
-            "source workflow run",
-        )
+        try:
+            run = _mapping(
+                api("GET", f"repos/{SOURCE_REPOSITORY}/actions/runs/{run_id}"),
+                "source workflow run",
+            )
+        except GitHubApiError:
+            failures += 1
+            if failures > SOURCE_RUN_MAX_CONSECUTIVE_FAILURES:
+                raise
+            if attempt + 1 < attempts:
+                sleep(SOURCE_RUN_INTERVAL_SECONDS)
+            continue
+        failures = 0
         status = run.get("status")
         if status == "completed":
             break
-        if status not in {"queued", "in_progress"}:
+        if status not in SOURCE_RUN_PENDING_STATUSES:
             raise SourceVerificationError("source workflow run has an invalid status")
         if attempt + 1 < attempts:
-            sleep(10)
+            sleep(SOURCE_RUN_INTERVAL_SECONDS)
     if run is None or run.get("status") != "completed":
         raise SourceVerificationError("source workflow did not complete before the timeout")
     run_repository = _mapping(run.get("repository"), "source workflow repository")

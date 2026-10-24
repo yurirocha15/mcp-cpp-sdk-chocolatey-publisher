@@ -43,7 +43,7 @@ jobs:
   verify:
     name: verify signed immutable Chocolatey input
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 150
     permissions:
       actions: read
       contents: read

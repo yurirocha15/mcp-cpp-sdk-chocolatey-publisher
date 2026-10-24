@@ -191,7 +191,10 @@ def decide_claim(
         raise SubmissionError("existing submission issue identity is malformed")
     state = _parse_claim(body, identity)
     if state == "PREPARING":
-        raise SubmissionError("existing PREPARING claim requires manual reconciliation")
+        # _parse_claim proved the identity (including request_uuid) is
+        # byte-identical, so this is a retry of the same request: resume its
+        # own claim. A different request or package never reaches this point.
+        return ClaimDecision(number, False, None)
     return ClaimDecision(number, True, None)
 
 

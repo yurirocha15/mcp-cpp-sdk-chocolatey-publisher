@@ -43,7 +43,7 @@ try {
     $mock = Join-Path $root 'mock-choco.ps1'
     @'
 if ($args.Count -eq 1 -and $args[0] -ceq '--version') {
-    if ($env:MOCK_CHOCO_VERSION) { $env:MOCK_CHOCO_VERSION } else { '2.7.3' }
+    if ($env:MOCK_CHOCO_VERSION) { $env:MOCK_CHOCO_VERSION } else { '2.7.4' }
     exit 0
 }
 if ($env:MOCK_FAIL_PUSH -eq 'true') {
@@ -62,7 +62,18 @@ exit 0
     $env:EXPECTED_TEST_KEY = $env:CHOCOLATEY_API_KEY
     $env:MOCK_MARKER = Join-Path $root 'published.txt'
     $env:MOCK_FAIL_PUSH = 'false'
-    $env:MOCK_CHOCO_VERSION = '2.7.3'
+    foreach ($acceptable in @('2.7.4', '2.7.5', '2.10.0', '3.0.0')) {
+        Remove-Item -LiteralPath $env:MOCK_MARKER -ErrorAction SilentlyContinue
+        $env:MOCK_CHOCO_VERSION = $acceptable
+        & $publisher -SubmissionDirectory $submission -ExpectedPackage $packageName `
+            -ExpectedSha256 $packageSha256 -RunId '30' -RunAttempt '1' `
+            -ChocolateyCommand $mock
+        if (-not (Test-Path -LiteralPath $env:MOCK_MARKER)) {
+            throw "mock Chocolatey push was not invoked for version $acceptable"
+        }
+    }
+    $env:MOCK_CHOCO_VERSION = '2.7.4'
+    Remove-Item -LiteralPath $env:MOCK_MARKER -ErrorAction SilentlyContinue
     & $publisher -SubmissionDirectory $submission -ExpectedPackage $packageName `
         -ExpectedSha256 $packageSha256 -RunId '30' -RunAttempt '1' `
         -ChocolateyCommand $mock
@@ -70,20 +81,27 @@ exit 0
         throw 'mock Chocolatey push was not invoked'
     }
 
-    $env:MOCK_CHOCO_VERSION = '2.7.4'
-    try {
-        & $publisher -SubmissionDirectory $submission -ExpectedPackage $packageName `
-            -ExpectedSha256 $packageSha256 -RunId '30' -RunAttempt '1' `
-            -ChocolateyCommand $mock
-        throw 'wrong Chocolatey version unexpectedly succeeded'
-    }
-    catch {
-        if ($_.Exception.Message -notmatch 'Chocolatey CLI must be exactly 2.7.3') {
-            throw
+    foreach ($tooOld in @('2.7.3', '2.6.0', '1.9.9', 'garbage', '2.7.4-beta')) {
+        $env:MOCK_CHOCO_VERSION = $tooOld
+        Remove-Item -LiteralPath $env:MOCK_MARKER -ErrorAction SilentlyContinue
+        $rejected = $false
+        try {
+            & $publisher -SubmissionDirectory $submission -ExpectedPackage $packageName `
+                -ExpectedSha256 $packageSha256 -RunId '30' -RunAttempt '1' `
+                -ChocolateyCommand $mock
+        }
+        catch {
+            if ($_.Exception.Message -notmatch 'Chocolatey CLI must be at least 2.7.4') {
+                throw
+            }
+            $rejected = $true
+        }
+        if (-not $rejected -or (Test-Path -LiteralPath $env:MOCK_MARKER)) {
+            throw "Chocolatey version $tooOld unexpectedly succeeded"
         }
     }
 
-    $env:MOCK_CHOCO_VERSION = '2.7.3'
+    $env:MOCK_CHOCO_VERSION = '2.7.4'
     $env:MOCK_FAIL_PUSH = 'true'
     try {
         & $publisher -SubmissionDirectory $submission -ExpectedPackage $packageName `

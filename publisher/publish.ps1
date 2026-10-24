@@ -19,7 +19,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-$expectedChocolateyVersion = '2.7.3'
+$minimumChocolateyVersion = [version]'2.7.4'
 
 if ([string]::IsNullOrWhiteSpace($env:CHOCOLATEY_API_KEY)) {
     throw 'Chocolatey API key is unavailable'
@@ -79,8 +79,12 @@ if ($actualScriptSha256 -cne $identity.publisher_script_sha256) {
 }
 
 $chocolateyVersion = (& $ChocolateyCommand --version 2>$null | Out-String).Trim()
-if ($LASTEXITCODE -ne 0 -or $chocolateyVersion -cne $expectedChocolateyVersion) {
-    throw "Chocolatey CLI must be exactly $expectedChocolateyVersion"
+$parsedChocolateyVersion = $null
+if ($LASTEXITCODE -ne 0 -or
+    $chocolateyVersion -cnotmatch '^[0-9]+\.[0-9]+\.[0-9]+$' -or
+    -not [version]::TryParse($chocolateyVersion, [ref]$parsedChocolateyVersion) -or
+    $parsedChocolateyVersion -lt $minimumChocolateyVersion) {
+    throw "Chocolatey CLI must be at least $minimumChocolateyVersion"
 }
 & $ChocolateyCommand push $package `
     --source 'https://push.chocolatey.org/' `
