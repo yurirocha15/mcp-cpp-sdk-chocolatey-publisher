@@ -67,14 +67,24 @@ class PackageTests(unittest.TestCase):
         tag = f"v{version}"
         archive = f"mcp-cpp-sdk-{version}-windows-x64-v143-md.zip"
         digest = "a" * 64
-        nuspec = """<?xml version="1.0"?>
-<package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">
-  <metadata>
-    <id>mcp-cpp-sdk</id><version>0.2.0</version>
-    <license type="expression">Apache-2.0</license>
-  </metadata>
-</package>
-"""
+        license_url = f"https://github.com/yurirocha15/mcp-cpp-sdk/blob/{tag}/LICENSE"
+
+        def nuspec_for(
+            namespace: str = "http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd",
+            url: str = license_url,
+        ) -> bytes:
+            # Shape emitted by ``choco pack`` 2.7.4: UTF-8 BOM, 2013/05
+            # namespace, licenseUrl, and no <files> element.
+            return (
+                '\ufeff<?xml version="1.0" encoding="utf-8"?>\n'
+                f'<package xmlns="{namespace}">\n'
+                "  <metadata>\n"
+                "    <id>mcp-cpp-sdk</id>\n    <version>0.2.0</version>\n"
+                f"    <licenseUrl>{url}</licenseUrl>\n"
+                "  </metadata>\n</package>\n"
+            ).encode("utf-8")
+
+        nuspec = nuspec_for()
         install = _install_script(
             version=version,
             archive_url=(
@@ -86,9 +96,9 @@ class PackageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             package = Path(directory) / f"mcp-cpp-sdk.{version}.nupkg"
 
-            def write_package(install_script: str) -> None:
+            def write_package(install_script: str, spec: bytes = nuspec) -> None:
                 with zipfile.ZipFile(package, "w") as output:
-                    output.writestr("mcp-cpp-sdk.nuspec", nuspec)
+                    output.writestr("mcp-cpp-sdk.nuspec", spec)
                     output.writestr("tools/chocolateyinstall.ps1", install_script)
                     output.writestr("tools/chocolateyuninstall.ps1", _uninstall_script())
                     output.writestr("LICENSE.txt", "license")
@@ -105,6 +115,29 @@ class PackageTests(unittest.TestCase):
                 tag=tag,
                 records={archive: {"sha256": digest}},
             )
+            # The pre-pack 2015/06 namespace is still accepted.
+            write_package(
+                install,
+                nuspec_for("http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd"),
+            )
+            _verify_nupkg(
+                package, version=version, tag=tag, records={archive: {"sha256": digest}}
+            )
+            bad_specs = (
+                nuspec_for("http://example.invalid/nuspec.xsd"),
+                nuspec_for(url="https://github.com/yurirocha15/mcp-cpp-sdk/blob/v9.9.9/LICENSE"),
+                nuspec_for(url="https://example.invalid/LICENSE"),
+            )
+            for bad in bad_specs:
+                write_package(install, bad)
+                with self.assertRaises(ValueError):
+                    _verify_nupkg(
+                        package,
+                        version=version,
+                        tag=tag,
+                        records={archive: {"sha256": digest}},
+                    )
+            write_package(install)
             write_package(install + "Invoke-WebRequest 'https://example.invalid'\n")
             with self.assertRaises(ValueError):
                 _verify_nupkg(

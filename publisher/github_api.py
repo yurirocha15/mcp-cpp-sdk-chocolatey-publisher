@@ -9,7 +9,7 @@ from typing import Mapping, Protocol
 
 
 API_VERSION = "2026-03-10"
-EXPECTED_GH_VERSION = "2.96.0"
+MINIMUM_GH_VERSION = (2, 96, 0)
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 
 
@@ -56,9 +56,13 @@ def require_gh_version() -> None:
     except (UnicodeDecodeError, IndexError) as error:
         raise GitHubApiError("GitHub CLI version output is malformed") from error
     match = re.fullmatch(r"gh version ([0-9]+\.[0-9]+\.[0-9]+)(?: \([^\r\n]+\))?", first_line)
-    if match is None or match.group(1) != EXPECTED_GH_VERSION:
+    if match is None:
+        raise GitHubApiError(f"GitHub CLI version output is malformed: {first_line!r}")
+    found = tuple(int(part) for part in match.group(1).split("."))
+    if found < MINIMUM_GH_VERSION:
+        minimum = ".".join(str(part) for part in MINIMUM_GH_VERSION)
         raise GitHubApiError(
-            f"GitHub CLI must be exactly {EXPECTED_GH_VERSION}, got {first_line!r}"
+            f"GitHub CLI must be at least {minimum}, got {first_line!r}"
         )
 
 

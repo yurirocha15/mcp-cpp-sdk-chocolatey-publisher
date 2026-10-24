@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -22,6 +23,9 @@ from publisher.submission import (
 )
 from publisher.verify_release import _verify_publication_contract
 from publisher.verify_source import (
+    SOURCE_RUN_ATTEMPTS,
+    SOURCE_RUN_INTERVAL_SECONDS,
+    SOURCE_RUN_MAX_CONSECUTIVE_FAILURES,
     SourceVerificationError,
     verify_execution_context,
     verify_source_state,
@@ -111,12 +115,15 @@ class SourceVerificationTests(unittest.TestCase):
             self.assertEqual(completed.returncode, 0, completed.stderr)
             self.assertIn("source_workflow_head_sha=" + "1" * 40, output.read_text())
 
-    def test_github_cli_version_is_exact(self) -> None:
-        valid = subprocess.CompletedProcess(
-            [], 0, stdout=b"gh version 2.96.0 (2026-06-25)\n", stderr=b""
-        )
-        with patch("publisher.github_api.subprocess.run", return_value=valid):
-            require_gh_version()
+    def test_github_cli_version_is_a_minimum(self) -> None:
+        for version in ("2.96.0", "2.102.0", "3.0.0"):
+            valid = subprocess.CompletedProcess(
+                [], 0, stdout=f"gh version {version} (2026-06-25)\n".encode(), stderr=b""
+            )
+            with self.subTest(version=version), patch(
+                "publisher.github_api.subprocess.run", return_value=valid
+            ):
+                require_gh_version()
         wrong = subprocess.CompletedProcess(
             [], 0, stdout=b"gh version 2.95.0 (2026-06-01)\n", stderr=b""
         )
@@ -134,13 +141,13 @@ class SourceVerificationTests(unittest.TestCase):
             repository_id="303",
             expected_repository_id="303",
             sha=value["provider_control_sha"],
-            ref="refs/tags/release-control-v1",
+            ref="refs/tags/release-control-v2",
             workflow_ref=(
                 f"{PUBLISHER}/.github/workflows/publish.yml@"
-                "refs/tags/release-control-v1"
+                "refs/tags/release-control-v2"
             ),
         )
-        self.assertEqual(control_tag, "release-control-v1")
+        self.assertEqual(control_tag, "release-control-v2")
         with self.assertRaises(SourceVerificationError):
             verify_execution_context(
                 value,
@@ -148,10 +155,10 @@ class SourceVerificationTests(unittest.TestCase):
                 repository_id="303",
                 expected_repository_id="303",
                 sha="4" * 40,
-                ref="refs/tags/release-control-v1",
+                ref="refs/tags/release-control-v2",
                 workflow_ref=(
                     f"{PUBLISHER}/.github/workflows/publish.yml@"
-                    "refs/tags/release-control-v1"
+                    "refs/tags/release-control-v2"
                 ),
             )
 
@@ -166,6 +173,116 @@ class SourceVerificationTests(unittest.TestCase):
             source_repository_id="101",
             source_owner_id="202",
             sleep=lambda _: None,
+        )
+
+    def test_source_run_polling_waits_two_hours_at_thirty_seconds(self) -> None:
+        self.assertEqual(SOURCE_RUN_INTERVAL_SECONDS, 30)
+        self.assertEqual(SOURCE_RUN_ATTEMPTS * SOURCE_RUN_INTERVAL_SECONDS, 7200)
+        api = FakeSourceApi()
+        polls = {"count": 0}
+        original = api.__call__
+
+        def slow(method, endpoint, payload=None):
+            result = original(method, endpoint, payload)
+            if endpoint.endswith("/actions/runs/20"):
+                polls["count"] += 1
+                if polls["count"] < 200:
+                    return {**result, "status": "in_progress", "conclusion": None}
+            return result
+
+        sleeps: list[float] = []
+        verify_source_state(
+            slow,
+            dispatch(),
+            source_repository_id="101",
+            source_owner_id="202",
+            sleep=sleeps.append,
+        )
+        self.assertEqual(len(sleeps), 199)
+        self.assertEqual(set(sleeps), {30})
+
+    def test_source_run_that_never_completes_times_out_after_all_attempts(self) -> None:
+        api = FakeSourceApi()
+        original = api.__call__
+        polls = {"count": 0}
+
+        def never(method, endpoint, payload=None):
+            result = original(method, endpoint, payload)
+            if endpoint.endswith("/actions/runs/20"):
+                polls["count"] += 1
+                return {**result, "status": "queued", "conclusion": None}
+            return result
+
+        with self.assertRaises(SourceVerificationError):
+            verify_source_state(
+                never,
+                dispatch(),
+                source_repository_id="101",
+                source_owner_id="202",
+                sleep=lambda _: None,
+            )
+        self.assertEqual(polls["count"], SOURCE_RUN_ATTEMPTS)
+
+    def test_approval_gate_statuses_keep_waiting(self) -> None:
+        for status in ("waiting", "requested", "pending", "queued", "in_progress"):
+            api = FakeSourceApi()
+            original = api.__call__
+            polls = {"count": 0}
+
+            def gated(method, endpoint, payload=None, original=original, polls=polls, status=status):
+                result = original(method, endpoint, payload)
+                if endpoint.endswith("/actions/runs/20"):
+                    polls["count"] += 1
+                    if polls["count"] < 3:
+                        return {**result, "status": status, "conclusion": None}
+                return result
+
+            with self.subTest(status=status):
+                verify_source_state(
+                    gated, dispatch(), source_repository_id="101",
+                    source_owner_id="202", sleep=lambda _: None,
+                )
+                self.assertEqual(polls["count"], 3)
+
+    def _flaky(self, failures_in_a_row: int, cycles: int):
+        api = FakeSourceApi()
+        original = api.__call__
+        polls = {"count": 0}
+
+        def flaky(method, endpoint, payload=None):
+            if endpoint.endswith("/actions/runs/20"):
+                polls["count"] += 1
+                position = (polls["count"] - 1) % (failures_in_a_row + 1)
+                if polls["count"] <= cycles * (failures_in_a_row + 1) - 1 and position < failures_in_a_row:
+                    raise GitHubApiError("GitHub API request failed")
+                if polls["count"] <= cycles * (failures_in_a_row + 1) - 1:
+                    return {**original(method, endpoint, payload), "status": "waiting", "conclusion": None}
+            return original(method, endpoint, payload)
+
+        return flaky
+
+    def test_four_consecutive_transient_failures_are_tolerated(self) -> None:
+        self.assertEqual(SOURCE_RUN_MAX_CONSECUTIVE_FAILURES, 4)
+        verify_source_state(
+            self._flaky(4, 3), dispatch(), source_repository_id="101",
+            source_owner_id="202", sleep=lambda _: None,
+        )
+
+    def test_fifth_consecutive_transient_failure_is_raised(self) -> None:
+        with self.assertRaises(GitHubApiError):
+            verify_source_state(
+                self._flaky(5, 3), dispatch(), source_repository_id="101",
+                source_owner_id="202", sleep=lambda _: None,
+            )
+
+    def test_verify_job_timeout_covers_source_polling(self) -> None:
+        workflow = (ROOT / ".github/workflows/publish.yml").read_text(encoding="utf-8")
+        verify = workflow.split("\n  verify:\n", 1)[1].split("\n  claim:\n", 1)[0]
+        match = re.search(r"timeout-minutes: ([0-9]+)", verify)
+        self.assertIsNotNone(match)
+        self.assertGreater(
+            int(match.group(1)) * 60,
+            SOURCE_RUN_ATTEMPTS * SOURCE_RUN_INTERVAL_SECONDS,
         )
 
     def test_wrong_source_workflow_head_fails_closed(self) -> None:
@@ -212,7 +329,7 @@ class PublicationContractTests(unittest.TestCase):
                 "homebrew": {},
                 "chocolatey": {
                     "repository": PUBLISHER,
-                    "control_tag": "release-control-v1",
+                    "control_tag": "release-control-v2",
                     "control_commit": value["provider_control_sha"],
                     "workflow": "publish.yml",
                 },
@@ -227,7 +344,7 @@ class PublicationContractTests(unittest.TestCase):
             _verify_publication_contract(
                 path,
                 publisher_repository_id="303",
-                provider_control_tag="release-control-v1",
+                provider_control_tag="release-control-v2",
                 provider_control_sha="2" * 40,
             )
 
@@ -239,7 +356,7 @@ class PublicationContractTests(unittest.TestCase):
                 _verify_publication_contract(
                     path,
                     publisher_repository_id="303",
-                    provider_control_tag="release-control-v1",
+                    provider_control_tag="release-control-v2",
                     provider_control_sha="4" * 40,
                 )
 
@@ -293,17 +410,38 @@ class SubmissionStateTests(unittest.TestCase):
         self.assertTrue(decision.already_submitted)
         self.assertEqual(decision.issue_number, 7)
 
-    def test_preparing_and_conflicting_claims_fail_closed(self) -> None:
+    def test_same_request_resumes_its_own_preparing_claim(self) -> None:
         identity = claim_identity(
             dispatch(),
             package_name="mcp-cpp-sdk.0.2.0.nupkg",
             package_sha256="a" * 64,
         )
+        decision = decide_claim(
+            [{"number": 7, "body": claim_body(identity, "PREPARING")}], identity
+        )
+        self.assertEqual(decision.issue_number, 7)
+        self.assertFalse(decision.already_submitted)
+        self.assertIsNone(decision.new_body)
+
+    def test_other_request_does_not_resume_a_preparing_claim(self) -> None:
+        identity = claim_identity(
+            dispatch(),
+            package_name="mcp-cpp-sdk.0.2.0.nupkg",
+            package_sha256="a" * 64,
+        )
+        other = dict(identity)
+        other["request_uuid"] = "00000000-0000-4000-8000-000000000002"
         with self.assertRaises(SubmissionError):
             decide_claim(
-                [{"number": 7, "body": claim_body(identity, "PREPARING")}],
-                identity,
+                [{"number": 7, "body": claim_body(other, "PREPARING")}], identity
             )
+
+    def test_conflicting_claims_fail_closed(self) -> None:
+        identity = claim_identity(
+            dispatch(),
+            package_name="mcp-cpp-sdk.0.2.0.nupkg",
+            package_sha256="a" * 64,
+        )
         conflicting = dict(identity)
         conflicting["package_sha256"] = "b" * 64
         with self.assertRaises(SubmissionError):
