@@ -141,13 +141,13 @@ class SourceVerificationTests(unittest.TestCase):
             repository_id="303",
             expected_repository_id="303",
             sha=value["provider_control_sha"],
-            ref="refs/tags/release-control-v2",
+            ref="refs/tags/release-control-v3",
             workflow_ref=(
                 f"{PUBLISHER}/.github/workflows/publish.yml@"
-                "refs/tags/release-control-v2"
+                "refs/tags/release-control-v3"
             ),
         )
-        self.assertEqual(control_tag, "release-control-v2")
+        self.assertEqual(control_tag, "release-control-v3")
         with self.assertRaises(SourceVerificationError):
             verify_execution_context(
                 value,
@@ -155,10 +155,10 @@ class SourceVerificationTests(unittest.TestCase):
                 repository_id="303",
                 expected_repository_id="303",
                 sha="4" * 40,
-                ref="refs/tags/release-control-v2",
+                ref="refs/tags/release-control-v3",
                 workflow_ref=(
                     f"{PUBLISHER}/.github/workflows/publish.yml@"
-                    "refs/tags/release-control-v2"
+                    "refs/tags/release-control-v3"
                 ),
             )
 
@@ -329,7 +329,7 @@ class PublicationContractTests(unittest.TestCase):
                 "homebrew": {},
                 "chocolatey": {
                     "repository": PUBLISHER,
-                    "control_tag": "release-control-v2",
+                    "control_tag": "release-control-v3",
                     "control_commit": value["provider_control_sha"],
                     "workflow": "publish.yml",
                 },
@@ -344,7 +344,7 @@ class PublicationContractTests(unittest.TestCase):
             _verify_publication_contract(
                 path,
                 publisher_repository_id="303",
-                provider_control_tag="release-control-v2",
+                provider_control_tag="release-control-v3",
                 provider_control_sha="2" * 40,
             )
 
@@ -356,7 +356,7 @@ class PublicationContractTests(unittest.TestCase):
                 _verify_publication_contract(
                     path,
                     publisher_repository_id="303",
-                    provider_control_tag="release-control-v2",
+                    provider_control_tag="release-control-v3",
                     provider_control_sha="4" * 40,
                 )
 
