@@ -28,7 +28,7 @@ from publisher.verify_git_status import verify as verify_gpg_status
 PUBLISHER_REPOSITORY = "yurirocha15/mcp-cpp-sdk-chocolatey-publisher"
 PUBLISHER_WORKFLOW = ".github/workflows/publish.yml"
 SOURCE_WORKFLOW = ".github/workflows/release.yml"
-CONTROL_REF = re.compile(r"refs/tags/(release-control-v[1-9][0-9]*)")
+PUBLISHER_REF = "refs/heads/main"
 POSITIVE_DECIMAL = re.compile(r"[1-9][0-9]*")
 # The source run contains approval-gated jobs, so wait up to two hours.
 SOURCE_RUN_INTERVAL_SECONDS = 30
@@ -66,8 +66,8 @@ def verify_execution_context(
     sha: str,
     ref: str,
     workflow_ref: str,
-) -> str:
-    """Bind this run to the immutable downstream control commit and tag."""
+) -> None:
+    """Bind this run to protected ``main`` at the commit the source dispatched."""
 
     if repository != PUBLISHER_REPOSITORY:
         raise SourceVerificationError("publisher repository identity is wrong")
@@ -79,13 +79,11 @@ def verify_execution_context(
         raise SourceVerificationError("publisher repository numeric identity is wrong")
     if sha != dispatch["provider_control_sha"]:
         raise SourceVerificationError("workflow commit differs from provider control commit")
-    match = CONTROL_REF.fullmatch(ref)
-    if match is None:
-        raise SourceVerificationError("publisher must run from an immutable control tag")
+    if ref != PUBLISHER_REF:
+        raise SourceVerificationError("publisher must run from protected main")
     expected_workflow_ref = f"{PUBLISHER_REPOSITORY}/{PUBLISHER_WORKFLOW}@{ref}"
     if workflow_ref != expected_workflow_ref:
-        raise SourceVerificationError("publisher workflow ref differs from the control tag")
-    return match.group(1)
+        raise SourceVerificationError("publisher workflow ref differs from protected main")
 
 
 def verify_source_state(

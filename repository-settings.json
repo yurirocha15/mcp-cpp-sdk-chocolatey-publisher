@@ -36,19 +36,12 @@
             "secret-scan"
         ]
     },
-    "control_tag_ruleset": {
-        "tag": "release-control-v3",
-        "enforcement": "active",
-        "update_blocked": true,
-        "deletion_blocked": true,
-        "bypass_actors": []
-    },
     "environment": {
         "name": "chocolatey-publish",
         "required_reviewer_count": 1,
         "prevent_self_review": false,
         "administrator_bypass": false,
-        "deployment_tag": "release-control-v3",
+        "deployment_branch": "main",
         "secrets": [
             "CHOCOLATEY_API_KEY"
         ],
