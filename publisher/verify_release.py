@@ -21,7 +21,6 @@ from publisher.github_api import strict_pairs
 CONTROL = {"release-manifest.json", "release-manifest.json.asc", "SHA256SUMS", "SHA256SUMS.asc"}
 FINGERPRINT = re.compile(r"[0-9A-F]{40}|[0-9A-F]{64}")
 DIGEST = re.compile(r"[0-9a-f]{64}")
-CONTROL_TAG = re.compile(r"release-control-v[1-9][0-9]*")
 PUBLISHER_REPOSITORY = "yurirocha15/mcp-cpp-sdk-chocolatey-publisher"
 PUBLICATION_CONTRACT = "release-publication-contract.json"
 NUSPEC_NAMESPACES = (
@@ -49,8 +48,6 @@ def verify(
     artifact_fingerprint: str,
     public_key: Path,
     publisher_repository_id: str,
-    provider_control_tag: str,
-    provider_control_sha: str,
 ) -> tuple[str, str]:
     release_key = directory / "release-signing-key.asc"
     if release_key.read_bytes() != public_key.read_bytes():
@@ -130,8 +127,6 @@ def verify(
     _verify_publication_contract(
         directory / PUBLICATION_CONTRACT,
         publisher_repository_id=publisher_repository_id,
-        provider_control_tag=provider_control_tag,
-        provider_control_sha=provider_control_sha,
     )
 
     package_name = f"mcp-cpp-sdk.{version}.nupkg"
@@ -147,15 +142,9 @@ def _verify_publication_contract(
     path: Path,
     *,
     publisher_repository_id: str,
-    provider_control_tag: str,
-    provider_control_sha: str,
 ) -> None:
     if re.fullmatch(r"[1-9][0-9]*", publisher_repository_id) is None:
         raise ValueError("publisher repository ID is malformed")
-    if CONTROL_TAG.fullmatch(provider_control_tag) is None:
-        raise ValueError("provider control tag is malformed")
-    if re.fullmatch(r"[0-9a-f]{40}", provider_control_sha) is None:
-        raise ValueError("provider control commit is malformed")
     value = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=strict_pairs)
     root_fields = {
         "schema_version",
@@ -164,9 +153,14 @@ def _verify_publication_contract(
         "channel_targets",
         "destinations",
         "conan_requirements",
-        "provider_controls",
     }
-    if not isinstance(value, dict) or set(value) != root_fields or value["schema_version"] != 1:
+    # Contracts signed before publishers ran from protected main also carry
+    # ``provider_controls``; the publisher no longer reads it.
+    if (
+        not isinstance(value, dict)
+        or set(value) - {"provider_controls"} != root_fields
+        or value["schema_version"] != 1
+    ):
         raise ValueError("publication contract root schema is not exact")
 
     channel_targets = value["channel_targets"]
@@ -194,20 +188,6 @@ def _verify_publication_contract(
         "repository_id": publisher_repository_id,
     }:
         raise ValueError("signed Chocolatey destination identity is wrong")
-
-    controls = value["provider_controls"]
-    if not isinstance(controls, dict) or set(controls) != {
-        "homebrew", "chocolatey", "conan"
-    }:
-        raise ValueError("provider control inventory is not exact")
-    control = controls["chocolatey"]
-    if control != {
-        "repository": PUBLISHER_REPOSITORY,
-        "control_tag": provider_control_tag,
-        "control_commit": provider_control_sha,
-        "workflow": "publish.yml",
-    }:
-        raise ValueError("signed Chocolatey provider control identity is wrong")
 
 
 def _verify_nupkg(
@@ -272,7 +252,13 @@ def _verify_nupkg(
     )
     if install_script != expected_install:
         raise ValueError("Chocolatey install script differs from the reviewed template")
-    if uninstall_script != _uninstall_script():
+    # Git on the Windows release runner checks the template out with CRLF line
+    # endings, so packages built that way carry the CRLF form of the template.
+    uninstall_template = _uninstall_script()
+    if uninstall_script not in {
+        uninstall_template,
+        uninstall_template.replace("\n", "\r\n"),
+    }:
         raise ValueError("Chocolatey uninstall script differs from the reviewed template")
     if verification != (
         f"The archive SHA-256 is {archive_sha256} and is bound by the immutable "
@@ -354,8 +340,6 @@ def main() -> int:
     parser.add_argument("--artifact-fingerprint", required=True)
     parser.add_argument("--public-key", type=Path, required=True)
     parser.add_argument("--publisher-repository-id", required=True)
-    parser.add_argument("--provider-control-tag", required=True)
-    parser.add_argument("--provider-control-sha", required=True)
     args = parser.parse_args()
     try:
         if DIGEST.fullmatch(args.manifest_sha256) is None:
@@ -371,8 +355,6 @@ def main() -> int:
             artifact_fingerprint=args.artifact_fingerprint,
             public_key=args.public_key,
             publisher_repository_id=args.publisher_repository_id,
-            provider_control_tag=args.provider_control_tag,
-            provider_control_sha=args.provider_control_sha,
         )
         output_path = os.environ.get("GITHUB_OUTPUT")
         if output_path:

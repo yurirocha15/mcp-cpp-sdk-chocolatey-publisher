@@ -52,7 +52,7 @@ jobs:
       package_name: ${{ steps.package.outputs.package_name }}
       package_sha256: ${{ steps.package.outputs.package_sha256 }}
     steps:
-      - name: Checkout immutable publisher controls
+      - name: Checkout the dispatched publisher commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
@@ -81,7 +81,6 @@ jobs:
           PRIMARY_FINGERPRINT: ${{ vars.SOURCE_SIGNING_PRIMARY_FINGERPRINT }}
           ARTIFACT_FINGERPRINT: ${{ vars.SOURCE_ARTIFACT_SIGNING_SUBKEY_FINGERPRINT }}
           PUBLISHER_REPOSITORY_ID: ${{ vars.PUBLISHER_REPOSITORY_ID }}
-          PROVIDER_CONTROL_SHA: ${{ inputs.provider_control_sha }}
         run: |
           mkdir release-assets
           gh release download "${TAG}" --repo yurirocha15/mcp-cpp-sdk --dir release-assets
@@ -91,9 +90,7 @@ jobs:
             --primary-fingerprint "${PRIMARY_FINGERPRINT}" \
             --artifact-fingerprint "${ARTIFACT_FINGERPRINT}" \
             --public-key keys/release-signing-key.asc \
-            --publisher-repository-id "${PUBLISHER_REPOSITORY_ID}" \
-            --provider-control-tag "${GITHUB_REF_NAME}" \
-            --provider-control-sha "${PROVIDER_CONTROL_SHA}"
+            --publisher-repository-id "${PUBLISHER_REPOSITORY_ID}"
       - name: Create a digest-bound same-run handoff
         env:
           PACKAGE_NAME: ${{ steps.package.outputs.package_name }}
@@ -121,7 +118,7 @@ jobs:
             echo
             echo "- Source: ${{ steps.input.outputs.source_tag }} at ${{ steps.input.outputs.source_commit_sha }}"
             echo "- Source workflow: ${{ inputs.source_workflow_run_id }} at ${{ inputs.source_workflow_head_sha }}"
-            echo "- Provider control: ${GITHUB_REF_NAME} at ${{ inputs.provider_control_sha }}"
+            echo "- Publisher: ${GITHUB_REF_NAME} at ${{ inputs.provider_control_sha }}"
             echo "- Immutable release ID: ${{ inputs.github_release_id }}"
             echo "- Release manifest SHA-256: ${{ inputs.release_manifest_sha256 }}"
             echo "- Package: ${PACKAGE_NAME}"

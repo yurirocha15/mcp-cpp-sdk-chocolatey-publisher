@@ -133,34 +133,36 @@ class SourceVerificationTests(unittest.TestCase):
         ):
             require_gh_version()
 
-    def test_control_tag_context_binds_exact_provider_commit(self) -> None:
+    def test_main_context_binds_exact_provider_commit(self) -> None:
         value = dispatch()
-        control_tag = verify_execution_context(
-            value,
-            repository=PUBLISHER,
-            repository_id="303",
-            expected_repository_id="303",
-            sha=value["provider_control_sha"],
-            ref="refs/tags/release-control-v3",
-            workflow_ref=(
-                f"{PUBLISHER}/.github/workflows/publish.yml@"
-                "refs/tags/release-control-v3"
-            ),
-        )
-        self.assertEqual(control_tag, "release-control-v3")
-        with self.assertRaises(SourceVerificationError):
+
+        def context(sha: str, ref: str, workflow_ref: str | None = None) -> None:
             verify_execution_context(
                 value,
                 repository=PUBLISHER,
                 repository_id="303",
                 expected_repository_id="303",
-                sha="4" * 40,
-                ref="refs/tags/release-control-v3",
-                workflow_ref=(
-                    f"{PUBLISHER}/.github/workflows/publish.yml@"
-                    "refs/tags/release-control-v3"
-                ),
+                sha=sha,
+                ref=ref,
+                workflow_ref=workflow_ref
+                or f"{PUBLISHER}/.github/workflows/publish.yml@{ref}",
             )
+
+        context(value["provider_control_sha"], "refs/heads/main")
+        rejected = (
+            ("4" * 40, "refs/heads/main", None),
+            (value["provider_control_sha"], "refs/tags/release-control-v3", None),
+            (value["provider_control_sha"], "refs/heads/feature", None),
+            (
+                value["provider_control_sha"],
+                "refs/heads/main",
+                f"{PUBLISHER}/.github/workflows/publish.yml@refs/heads/feature",
+            ),
+        )
+        for sha, ref, workflow_ref in rejected:
+            with self.subTest(sha=sha, ref=ref, workflow_ref=workflow_ref):
+                with self.assertRaises(SourceVerificationError):
+                    context(sha, ref, workflow_ref)
 
     def test_resumed_release_uses_workflow_head_not_release_commit(self) -> None:
         value = dispatch()
@@ -300,7 +302,6 @@ class SourceVerificationTests(unittest.TestCase):
 
 class PublicationContractTests(unittest.TestCase):
     def contract(self) -> dict[str, object]:
-        value = dispatch()
         return {
             "schema_version": 1,
             "native_targets": [],
@@ -325,40 +326,41 @@ class PublicationContractTests(unittest.TestCase):
                 "conan_control": {},
             },
             "conan_requirements": [],
-            "provider_controls": {
-                "homebrew": {},
-                "chocolatey": {
-                    "repository": PUBLISHER,
-                    "control_tag": "release-control-v3",
-                    "control_commit": value["provider_control_sha"],
-                    "workflow": "publish.yml",
-                },
-                "conan": {},
-            },
         }
 
-    def test_signed_destination_and_control_are_exact(self) -> None:
+    def verify(self, contract: dict[str, object]) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "contract.json"
-            path.write_text(json.dumps(self.contract()), encoding="utf-8")
-            _verify_publication_contract(
-                path,
-                publisher_repository_id="303",
-                provider_control_tag="release-control-v3",
-                provider_control_sha="2" * 40,
-            )
+            path.write_text(json.dumps(contract), encoding="utf-8")
+            _verify_publication_contract(path, publisher_repository_id="303")
 
-    def test_wrong_signed_control_commit_fails(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "contract.json"
-            path.write_text(json.dumps(self.contract()), encoding="utf-8")
+    def test_signed_destination_is_exact(self) -> None:
+        self.verify(self.contract())
+
+    def test_contract_with_former_provider_controls_is_accepted(self) -> None:
+        contract = self.contract()
+        contract["provider_controls"] = {
+            "homebrew": {},
+            "chocolatey": {
+                "repository": PUBLISHER,
+                "control_tag": "release-control-v3",
+                "control_commit": "4" * 40,
+                "workflow": "publish.yml",
+            },
+            "conan": {},
+        }
+        self.verify(contract)
+
+    def test_wrong_destination_or_extra_root_field_fails(self) -> None:
+        wrong_destination = self.contract()
+        wrong_destination["destinations"]["chocolatey"]["repository_id"] = "304"
+        extra_field = self.contract()
+        extra_field["unexpected"] = {}
+        missing_field = self.contract()
+        del missing_field["conan_requirements"]
+        for contract in (wrong_destination, extra_field, missing_field):
             with self.assertRaises(ValueError):
-                _verify_publication_contract(
-                    path,
-                    publisher_repository_id="303",
-                    provider_control_tag="release-control-v3",
-                    provider_control_sha="4" * 40,
-                )
+                self.verify(contract)
 
 
 class SubmissionStateTests(unittest.TestCase):

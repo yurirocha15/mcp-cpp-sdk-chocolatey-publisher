@@ -96,11 +96,15 @@ class PackageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             package = Path(directory) / f"mcp-cpp-sdk.{version}.nupkg"
 
-            def write_package(install_script: str, spec: bytes = nuspec) -> None:
+            def write_package(
+                install_script: str,
+                spec: bytes = nuspec,
+                uninstall_script: str = _uninstall_script(),
+            ) -> None:
                 with zipfile.ZipFile(package, "w") as output:
                     output.writestr("mcp-cpp-sdk.nuspec", spec)
                     output.writestr("tools/chocolateyinstall.ps1", install_script)
-                    output.writestr("tools/chocolateyuninstall.ps1", _uninstall_script())
+                    output.writestr("tools/chocolateyuninstall.ps1", uninstall_script)
                     output.writestr("LICENSE.txt", "license")
                     output.writestr(
                         "VERIFICATION.txt",
@@ -123,6 +127,27 @@ class PackageTests(unittest.TestCase):
             _verify_nupkg(
                 package, version=version, tag=tag, records={archive: {"sha256": digest}}
             )
+            # A Windows checkout converts the uninstall template to CRLF.
+            uninstall = _uninstall_script()
+            write_package(install, uninstall_script=uninstall.replace("\n", "\r\n"))
+            _verify_nupkg(
+                package, version=version, tag=tag, records={archive: {"sha256": digest}}
+            )
+            bad_uninstalls = (
+                uninstall.replace("\n", "\r\n", 1),
+                uninstall.replace("\n", "\r"),
+                uninstall + "Invoke-WebRequest 'https://example.invalid'\n",
+                uninstall.replace("\n", "\r\n") + "\r\n",
+            )
+            for bad in bad_uninstalls:
+                write_package(install, uninstall_script=bad)
+                with self.assertRaises(ValueError):
+                    _verify_nupkg(
+                        package,
+                        version=version,
+                        tag=tag,
+                        records={archive: {"sha256": digest}},
+                    )
             bad_specs = (
                 nuspec_for("http://example.invalid/nuspec.xsd"),
                 nuspec_for(url="https://github.com/yurirocha15/mcp-cpp-sdk/blob/v9.9.9/LICENSE"),
