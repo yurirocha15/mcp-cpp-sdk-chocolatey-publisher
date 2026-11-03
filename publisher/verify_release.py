@@ -204,11 +204,14 @@ def _verify_nupkg(
         required = {
             "tools/chocolateyinstall.ps1",
             "tools/chocolateyuninstall.ps1",
-            "LICENSE.txt",
-            "VERIFICATION.txt",
         }
         if not required <= set(names):
             raise ValueError("Chocolatey package omits required files")
+        # The package downloads the archive at install time and its install
+        # script carries the checksum, so it ships no copied license or
+        # verification text that could go stale.
+        if {"LICENSE.txt", "VERIFICATION.txt"} & set(names):
+            raise ValueError("Chocolatey package contains LICENSE.txt or VERIFICATION.txt")
         nuspecs = [name for name in names if PurePosixPath(name).parent == PurePosixPath(".") and name.endswith(".nuspec")]
         if len(nuspecs) != 1:
             raise ValueError("Chocolatey package must contain one root nuspec")
@@ -236,7 +239,6 @@ def _verify_nupkg(
             raise ValueError("Chocolatey nuspec license URL is not the tagged Apache-2.0 LICENSE")
         install_script = package.read("tools/chocolateyinstall.ps1").decode("utf-8")
         uninstall_script = package.read("tools/chocolateyuninstall.ps1").decode("utf-8")
-        verification = package.read("VERIFICATION.txt").decode("utf-8")
 
     archive_name = f"mcp-cpp-sdk-{version}-windows-x64-v143-md.zip"
     expected_url = f"https://github.com/yurirocha15/mcp-cpp-sdk/releases/download/{tag}/{archive_name}"
@@ -260,11 +262,6 @@ def _verify_nupkg(
         uninstall_template.replace("\n", "\r\n"),
     }:
         raise ValueError("Chocolatey uninstall script differs from the reviewed template")
-    if verification != (
-        f"The archive SHA-256 is {archive_sha256} and is bound by the immutable "
-        "GitHub Release manifest.\n"
-    ):
-        raise ValueError("Chocolatey install checksum does not match the release manifest")
 
 
 def _install_script(*, version: str, archive_url: str, archive_sha256: str) -> str:

@@ -100,17 +100,14 @@ class PackageTests(unittest.TestCase):
                 install_script: str,
                 spec: bytes = nuspec,
                 uninstall_script: str = _uninstall_script(),
+                extra: tuple[str, ...] = (),
             ) -> None:
                 with zipfile.ZipFile(package, "w") as output:
                     output.writestr("mcp-cpp-sdk.nuspec", spec)
                     output.writestr("tools/chocolateyinstall.ps1", install_script)
                     output.writestr("tools/chocolateyuninstall.ps1", uninstall_script)
-                    output.writestr("LICENSE.txt", "license")
-                    output.writestr(
-                        "VERIFICATION.txt",
-                        f"The archive SHA-256 is {digest} and is bound by the immutable "
-                        "GitHub Release manifest.\n",
-                    )
+                    for name in extra:
+                        output.writestr(name, "text")
 
             write_package(install)
             _verify_nupkg(
@@ -171,6 +168,47 @@ class PackageTests(unittest.TestCase):
                     tag=tag,
                     records={archive: {"sha256": digest}},
                 )
+            # The archive checksum lives only in the install script.
+            write_package(
+                _install_script(
+                    version=version,
+                    archive_url=(
+                        f"https://github.com/yurirocha15/mcp-cpp-sdk/"
+                        f"releases/download/{tag}/{archive}"
+                    ),
+                    archive_sha256="b" * 64,
+                )
+            )
+            with self.assertRaises(ValueError):
+                _verify_nupkg(
+                    package,
+                    version=version,
+                    tag=tag,
+                    records={archive: {"sha256": digest}},
+                )
+            for missing in ("tools/chocolateyinstall.ps1", "tools/chocolateyuninstall.ps1"):
+                with zipfile.ZipFile(package, "w") as output:
+                    output.writestr("mcp-cpp-sdk.nuspec", nuspec)
+                    if missing != "tools/chocolateyinstall.ps1":
+                        output.writestr("tools/chocolateyinstall.ps1", install)
+                    if missing != "tools/chocolateyuninstall.ps1":
+                        output.writestr("tools/chocolateyuninstall.ps1", _uninstall_script())
+                with self.subTest(missing=missing), self.assertRaises(ValueError):
+                    _verify_nupkg(
+                        package,
+                        version=version,
+                        tag=tag,
+                        records={archive: {"sha256": digest}},
+                    )
+            for stale in ("LICENSE.txt", "VERIFICATION.txt"):
+                write_package(install, extra=(stale,))
+                with self.subTest(stale=stale), self.assertRaises(ValueError):
+                    _verify_nupkg(
+                        package,
+                        version=version,
+                        tag=tag,
+                        records={archive: {"sha256": digest}},
+                    )
             write_package(install)
             with zipfile.ZipFile(package, "a") as output:
                 output.writestr("../escape", "bad")
